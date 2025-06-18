@@ -8,7 +8,7 @@ print("--- BƯỚC 1: THIẾT LẬP THAM SỐ ---")
 
 # Đường dẫn đến file dữ liệu văn bản thô
 DATA_DIR = "." 
-TRAIN_FILE = os.path.join(DATA_DIR, "dataset.txt")
+TRAIN_FILE = os.path.join(DATA_DIR, "dataset_pretrain.txt")
 
 # Tên file tạm thời cho mô hình sentencepiece
 MODEL_PREFIX = "temp_vietnamese_legal_tokenizer"

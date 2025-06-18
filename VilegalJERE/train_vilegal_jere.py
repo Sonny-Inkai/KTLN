@@ -13,8 +13,7 @@ import json
 from transformers import AutoTokenizer
 
 # -----------------------------------------------------------------------------
-# -- CÔNG TẮC CHÍNH --
-finetune = True
+finetune = False # True: fine-tuning, False: pre-training
 # -----------------------------------------------------------------------------
 
 # --- Cấu hình chung ---
