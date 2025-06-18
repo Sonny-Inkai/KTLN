@@ -1,24 +1,8 @@
-import torch
-import json
-from transformers import AutoTokenizer
-from model.ViLegalJERE import ViLegalJERE
+# To run this code you need to install the following dependencies:
+# pip install google-genai
 
-def load_model_and_tokenizer(model_path="/kaggle/working/out_vilegal_t5small"):
-    """Load finetuned model and tokenizer"""
-    try:
-        model = ViLegalJERE.from_pretrained(model_path)
-        tokenizer = AutoTokenizer.from_pretrained('sonny36/vilegaljere')
-        model.eval()
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model.to(device)
-        print(f"Model loaded successfully on {device}")
-        print(f"Model vocab size: {model.config.vocab_size}")
-        print(f"Tokenizer vocab size: {len(tokenizer)}")
-        return model, tokenizer, device
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        return None, None, None
-
+import base64
+import os
 from google import genai
 from google.genai import types
 
@@ -83,7 +67,7 @@ Before providing the final output, perform these mental checks:
 Plain Text Output:
 """
 
-def generate_relations(model2=None, tokenizer=None, device=None, input_text=None, max_length=512):
+def extract_legal_relations(input_text):
     """
     Extract legal entity relationships from Vietnamese text using Gemini 2.5 Flash
     
@@ -137,3 +121,22 @@ def generate_relations(model2=None, tokenizer=None, device=None, input_text=None
     except Exception as e:
         print(f"Error calling Gemini API: {e}")
         return None
+
+def generate():
+    """
+    Example usage of the extract_legal_relations function
+    """
+    # Example Vietnamese legal text
+    sample_text = """
+    Điều 2 01/2014/NQLT/CP-UBTƯMTTQVN hướng dẫn phối hợp thực hiện một số quy định của pháp luật về hòa giải ở cơ sở Nguyên tắc phối hợp 1. Việc phối hợp hoạt động được thực hiện trên cơ sở chức năng, nhiệm vụ, quyền hạn, bảo đảm vai trò, trách nhiệm của mỗi cơ quan, tổ chức. 2. Phát huy vai trò nòng cốt của Mặt trận Tổ quốc Việt Nam và các tổ chức thành viên của Mặt trận; tăng cường tính chủ động, tích cực của mỗi cơ quan, tổ chức trong công tác hòa giải ở cơ sở. 3. Việc phối hợp phải thường xuyên, kịp thời, đồng bộ, chặt chẽ, thống nhất, đúng quy định của pháp luật.
+    """
+    
+    result = extract_legal_relations(sample_text)
+    if result:
+        print("Extracted Relations:")
+        print(result)
+    else:
+        print("No relations found or error occurred")
+
+if __name__ == "__main__":
+    generate() 
