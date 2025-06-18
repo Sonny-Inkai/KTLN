@@ -1,3 +1,24 @@
+import torch
+import json
+from transformers import AutoTokenizer
+from model.ViLegalJERE import ViLegalJERE
+
+def load_model_and_tokenizer(model_path="/kaggle/working/out_vilegal_t5small"):
+    """Load finetuned model and tokenizer"""
+    try:
+        model = ViLegalJERE.from_pretrained(model_path)
+        tokenizer = AutoTokenizer.from_pretrained('sonny36/vilegaljere')
+        model.eval()
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model.to(device)
+        print(f"Model loaded successfully on {device}")
+        print(f"Model vocab size: {model.config.vocab_size}")
+        print(f"Tokenizer vocab size: {len(tokenizer)}")
+        return model, tokenizer, device
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return None, None, None
+
 from google import genai
 from google.genai import types
 
