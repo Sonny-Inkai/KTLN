@@ -19,99 +19,123 @@ def load_model_and_tokenizer(model_path="/kaggle/working/out_vilegal_t5small"):
         print(f"Error loading model: {e}")
         return None, None, None
 
-def generate_relations(model, tokenizer, device, context_text, max_length=512):
-    """Generate relation extraction from context"""
-    # Tokenize input (encoder input)
-    inputs = tokenizer(
-        context_text,
-        max_length=max_length,
-        truncation=True,
-        padding=True,
-        return_tensors="pt"
-    ).to(device)
-    
-    # Generate using the model's custom generate method
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids=inputs['input_ids'],
-            attention_mask=inputs['attention_mask'],
-            max_length=max_length,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id
-        )
-    
-    # Decode output (skip the start token)
-    generated_text = tokenizer.decode(outputs[0, 1:], skip_special_tokens=True)
-    return generated_text
+from google import genai
+from google.genai import types
 
-def test_model():
-    """Test model with 3 sample cases"""
-    model, tokenizer, device = load_model_and_tokenizer()
+# --- ENTITY AND RELATION DEFINITIONS ---
+ENTITY_DEFINITIONS = """
+- ORGANIZATION: Tên công ty, tổ chức, cơ quan nhà nước
+- LOCATION: Địa danh địa lý
+- DATE/TIME: Ngày, giờ, khoảng thời gian cụ thể
+- LEGAL_PROVISION: Điều khoản, quy định, luật, nghị định
+"""
+
+RELATION_DEFINITIONS = """
+- Effective_From (Có hiệu lực từ): LEGAL_PROVISION -> DATE/TIME
+- Applicable_In (Áp dụng tại): LEGAL_PROVISION -> LOCATION
+- Relates_To (Liên quan đến): [LỰA CHỌN CUỐI CÙNG] LEGAL_PROVISION -> ORGANIZATION/LEGAL_PROVISION
+- Amended_By (Sửa đổi bởi): LEGAL_PROVISION -> LEGAL_PROVISION
+"""
+
+SELF_VERIFY_PROMPT_TEMPLATE = """
+You are a meticulous legal data analyst robot. Your task is to analyze the Vietnamese text, extract relationships following strict priority rules, and verify your own work.
+
+--- 1. ENTITY DEFINITIONS ---
+{entity_definitions}
+
+--- 2. RELATION DEFINITIONS (Strict) ---
+{relation_definitions}
+
+--- 3. [CRITICAL] PRIORITY RULES ---
+1.  **ƯU TIÊN CÁC NHÃN CỤ THỂ**: Luôn luôn kiểm tra xem `Effective_From`, `Applicable_In`, hoặc `Amended_By` có áp dụng được không TRƯỚC KHI xem xét `Relates_To`.
+2.  **`Relates_To` LÀ LỰA CHỌN CUỐI CÙNG**: Chỉ dùng `Relates_To` nếu không có nhãn nào khác phù hợp.
+
+--- 4. OUTPUT FORMAT AND RULES ---
+- Output MUST be plain text. Each relation on a new line.
+- Format: <HEAD_LABEL> head_text <TAIL_LABEL> tail_text <RELATION_LABEL>
+- Extract text EXACTLY as it appears in the source.
+- **[CRITICAL] NO EXTRA TEXT**: Your entire response MUST NOT contain any explanations, greetings, introductions, or summaries. If no relations are found, provide a completely empty response.
+
+--- 5. EXAMPLES (Good and Bad) ---
+-- GOOD EXAMPLE --
+CONTEXT: Điều 25: Hiệu lực thi hành. Quy chế này tham chiếu theo Luật Doanh nghiệp 2020 và có hiệu lực từ ngày 01/12/2025 tại Việt Nam.
+EXPECTED OUTPUT:
+<LEGAL_PROVISION> Quy chế này <LEGAL_PROVISION> Luật Doanh nghiệp 2020 <Relates_To>
+<LEGAL_PROVISION> Quy chế này <DATE/TIME> ngày 01/12/2025 <Effective_From>
+<LEGAL_PROVISION> Quy chế này <LOCATION> Việt Nam <Applicable_In>
+
+-- BAD EXAMPLE (Incorrect Logic) --
+CONTEXT: Quyết định này có hiệu lực kể từ ngày ký.
+WRONG OUTPUT: <LEGAL_PROVISION> Quyết định này <DATE/TIME> ngày ký <Relates_To>
+CORRECT OUTPUT: <LEGAL_PROVISION> Quyết định này <DATE/TIME> ngày ký <Effective_From>
+
+--- 6. SELF-VERIFICATION PROCESS ---
+Before providing the final output, perform these mental checks:
+1.  **Analyze**: Read the text and identify potential relations.
+2.  **Prioritize & Verify**: Did I follow the PRIORITY RULES? Have I wrongly used `Relates_To` where a more specific label fits?
+3.  **Format**: Present ONLY the verified relations in the required plain text format.
+
+--- 7. TEXT TO ANALYZE (ID: {item_id}) ---
+{text_context}
+--- END OF TEXT ---
+
+**FINAL INSTRUCTION: Your output must only be the data lines. Do not say "Here are the results" or anything similar. Output only the data.**
+Plain Text Output:
+"""
+
+def generate_relations(model2=None, tokenizer=None, device=None, input_text=None, max_length=512):
+    """
+    Extract legal entity relationships from Vietnamese text using Gemini 2.5 Flash
     
-    if model is None:
-        print("Failed to load model. Exiting...")
-        return
+    Args:
+        input_text (str): The Vietnamese legal text to analyze
     
-    # Test cases from your data
-    test_cases = [
-        {
-            "id": "54/2019/QH14__Dieu51",
-            "context": "Điều 51: Tham gia của nhà đầu tư nước ngoài, tổ chức kinh tế có vốn đầu tư nước ngoài trên thị trường chứng khoán Việt Nam 1. Nhà đầu tư nước ngoài, tổ chức kinh tế có vốn đầu tư nước ngoài khi tham gia đầu tư, hoạt động trên thị trường chứng khoán Việt Nam tuân thủ quy định về tỷ lệ sở hữu nước ngoài, điều kiện, trình tự, thủ tục đầu tư theo quy định của pháp luật về chứng khoán và thị trường chứng khoán. 2. Chính phủ quy định chi tiết tỷ lệ sở hữu nước ngoài, điều kiện, trình tự, thủ tục đầu tư, việc tham gia của nhà đầu tư nước ngoài, tổ chức kinh tế có vốn đầu tư nước ngoài trên thị trường chứng khoán Việt Nam.",
-            "expected": "<ORGANIZATION> tổ chức kinh tế có vốn đầu tư nước ngoài <LOCATION> thị trường chứng khoán Việt Nam <Relates_To> <LEGAL_PROVISION> pháp luật về chứng khoán và thị trường chứng khoán <LOCATION> thị trường chứng khoán Việt Nam <Relates_To> <ORGANIZATION> Chính phủ <ORGANIZATION> tổ chức kinh tế có vốn đầu tư nước ngoài <Relates_To> <ORGANIZATION> tổ chức kinh tế có vốn đầu tư nước ngoài <LOCATION> thị trường chứng khoán Việt Nam <Relates_To>"
-        },
-        {
-            "id": "59/2020/QH14__Dieu173", 
-            "context": "Điều 173: Trách nhiệm của Kiểm soát viên 1. Tuân thủ đúng pháp luật, Điều lệ công ty, nghị quyết Đại hội đồng cổ đông và đạo đức nghề nghiệp trong thực hiện quyền và nghĩa vụ được giao. 2. Thực hiện quyền và nghĩa vụ được giao một cách trung thực, cẩn trọng, tốt nhất nhằm bảo đảm lợi ích hợp pháp tối đa của công ty. 3. Trung thành với lợi ích của công ty và cổ đông; không lạm dụng địa vị, chức vụ và sử dụng thông tin, bí quyết, cơ hội kinh doanh, tài sản khác của công ty để tư lợi hoặc phục vụ lợi ích của tổ chức, cá nhân khác. 4. Nghĩa vụ khác theo quy định của Luật này và Điều lệ công ty. 5. Trường hợp vi phạm quy định tại các khoản 1, 2, 3 và 4 Điều này mà gây thiệt hại cho công ty hoặc người khác thì Kiểm soát viên phải chịu trách nhiệm cá nhân hoặc liên đới bồi thường thiệt hại đó. Thu nhập và lợi ích khác mà Kiểm soát viên có được do vi phạm phải hoàn trả cho công ty. 6. Trường hợp phát hiện có Kiểm soát viên vi phạm trong thực hiện quyền và nghĩa vụ được giao thì phải thông báo bằng văn bản đến Ban kiểm soát; yêu cầu người có hành vi vi phạm chấm dứt hành vi vi phạm và khắc phục hậu quả.",
-            "expected": "<RIGHT/DUTY> Tuân thủ đúng pháp luật, Điều lệ công ty, nghị quyết Đại hội đồng cổ đông và đạo đức nghề nghiệp trong thực hiện quyền và nghĩa vụ được giao <LEGAL_PROVISION> Điều 173 <Relates_To> <RIGHT/DUTY> Thực hiện quyền và nghĩa vụ được giao một cách trung thực, cẩn trọng, tốt nhất nhằm bảo đảm lợi ích hợp pháp tối đa của công ty <LEGAL_PROVISION> Điều 173 <Relates_To>"
-        },
-        {
-            "id": "54/2019/QH14__Dieu63",
-            "context": "Điều 63: Bừ trừ và thanh toán giao dịch chứng khoán 1. Hoạt động bù trừ, xác định nghĩa vụ thanh toán tiền và chứng khoán được thực hiện thông qua Tổng công ty lưu ký và bù trừ chứng khoán Việt Nam. 2. Thanh toán chứng khoán được thực hiện trên hệ thống tài khoản lưu ký tại Tổng công ty lưu ký và bù trừ chứng khoán Việt Nam, thanh toán tiền giao dịch chứng khoán được thực hiện qua ngân hàng thanh toán và phải tuân thủ nguyên tắc chuyển giao chứng khoán đồng thời với thanh toán tiền. 3. Bộ trưởng Bộ Tài chính quy định các biện pháp xử lý trong trường hợp thành viên của Tổng công ty lưu ký và bù trừ chứng khoán Việt Nam tạm thời mất khả năng thanh toán giao dịch chứng khoán.",
-            "expected": "<ORGANIZATION> Tổng công ty lưu ký và bù trừ chứng khoán Việt Nam <LEGAL_PROVISION> Điều 63 <Relates_To> <ORGANIZATION> Tổng công ty lưu ký và bù trừ chứng khoán Việt Nam <ORGANIZATION> ngân hàng thanh toán <Relates_To> <ORGANIZATION> Bộ Tài chính <ORGANIZATION> Tổng công ty lưu ký và bù trừ chứng khoán Việt Nam <Relates_To>"
-        }
+    Returns:
+        str: Extracted relations in the specified format
+    """
+    client = genai.Client(
+        api_key="AIzaSyC7S-71uyd628QEq2IvMCL8RCOwMyEDtkk",
+    )
+
+    # Format the prompt with the input text
+    formatted_prompt = SELF_VERIFY_PROMPT_TEMPLATE.format(
+        entity_definitions=ENTITY_DEFINITIONS,
+        relation_definitions=RELATION_DEFINITIONS,
+        item_id="text",
+        text_context=input_text
+    )
+
+    model = "gemini-2.5-flash"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(text=formatted_prompt),
+            ],
+        ),
     ]
     
-    print("=" * 80)
-    print("TESTING FINETUNED ViLegalJERE MODEL")
-    print("=" * 80)
-    
-    for i, test_case in enumerate(test_cases, 1):
-        print(f"\n🧪 TEST CASE {i}: {test_case['id']}")
-        print("-" * 60)
-        
-        print(f"📝 INPUT CONTEXT:")
-        print(f"{test_case['context'][:200]}...")
-        
-        print(f"\n🎯 EXPECTED RELATIONS:")
-        print(f"{test_case['expected'][:150]}...")
-        
-        print(f"\n🤖 MODEL GENERATED:")
-        try:
-            generated = generate_relations(model, tokenizer, device, test_case['context'])
-            print(f"{generated}")
-            
-            # Simple evaluation
-            if generated and len(generated) > 10:
-                print(f"✅ Generation successful ({len(generated)} chars)")
-                
-                # Check if output contains expected patterns
-                has_entities = any(tag in generated for tag in ["<ORGANIZATION>", "<LOCATION>", "<RIGHT/DUTY>", "<LEGAL_PROVISION>"])
-                has_relations = "<Relates_To>" in generated
-                
-                if has_entities and has_relations:
-                    print(f"✅ Output format looks correct (has entities and relations)")
-                else:
-                    print(f"⚠️ Output format may be incorrect")
-            else:
-                print("❌ Generation failed or too short")
-                
-        except Exception as e:
-            print(f"❌ Generation error: {e}")
-        
-        print("\n" + "="*60)
+    generate_content_config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(
+            thinking_budget=0,
+        ),
+        temperature=0.0,
+        response_mime_type="text/plain",
+    )
 
-if __name__ == "__main__":
-    test_model()
+    try:
+        result_text = ""
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            result_text += chunk.text
+        
+        return result_text.strip()
+    
+    except Exception as e:
+        print(f"Error calling Gemini API: {e}")
+        return None
+
+

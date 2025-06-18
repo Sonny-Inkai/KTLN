@@ -20,7 +20,6 @@ finetune = False # True: fine-tuning, False: pre-training
 eval_only = False
 always_save_checkpoint = True
 
-# Trong Kaggle notebook, thêm vào cell đầu tiên:
 import os
 os.environ['WANDB_API_KEY'] = 'bcc183326224decc1f9fee116ccfd509e740fab1'
 
