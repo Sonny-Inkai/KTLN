@@ -105,7 +105,7 @@ def generate_relations(model2=None, tokenizer=None, device=None, input_text=None
         text_context=input_text
     )
 
-    model = "gemini-2.5-flash"
+    model = "gemini-2.0-flash"
     contents = [
         types.Content(
             role="user",
@@ -116,10 +116,6 @@ def generate_relations(model2=None, tokenizer=None, device=None, input_text=None
     ]
     
     generate_content_config = types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(
-            thinking_budget=0,
-        ),
-        temperature=0.0,
         response_mime_type="text/plain",
     )
 
